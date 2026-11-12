@@ -7,6 +7,8 @@ package com.fatihtan.glosa
  * PC -> Verici (F051):  KAVCFG / MESAFE / CFGRED / RTCSET / RTCRED / E22CFG / E22RED / RSSRED / LOGRED
  * STM32 -> PC:          'D' + 18 byte canli veri, cevaplar (E22RED, RTCRED, CFGRED, E22RSS, RSSRED, LOGRED)
  * ESP32 kopru -> PC:    "RSSIRP" + 10 byte (ESP-NOW arac beacon RSSI raporu)
+ * PC <-> ESP32 kopru:   "RSSIES" + [6] esik (mutlak deger) — ESP-NOW RSSI esigi; kopru NVS'ye
+ *                       kaydeder, ayni 16 byte'i onay olarak geri yollar (STM32'ye gitmez)
  */
 object P {
     const val PACKET_SIZE = 16
@@ -25,6 +27,10 @@ object P {
     const val CMD_VRSSI = "RSSRED"
     const val CMD_LOGRED = "LOGRED"
     const val CMD_RSSIRP = "RSSIRP"
+    const val CMD_RSSIES = "RSSIES"
+
+    val RSSI_VALUES = listOf("-95", "-90", "-85", "-80", "-75", "-70")   // secilebilir esikler (dBm)
+    const val RSSI_DEFAULT = "-95"
 
     const val SEQ_GAP_MS = 250L          // verici: ardisik paketler arasi bekleme (flash yazimi)
     const val LOG_TIMEOUT_MS = 2000L     // kayit parcasi bekleme
@@ -41,6 +47,7 @@ object P {
         CMD_VRSSI to CMD_LEN + 9,
         CMD_LOGRED to CMD_LEN + 18,
         CMD_RSSIRP to CMD_LEN + 10,
+        CMD_RSSIES to CMD_LEN + 10,
     )
 
     // ---- E22 register bit haritalari ----
@@ -111,6 +118,7 @@ sealed class Msg {
     class VRssi(val r: IntArray) : Msg()
     class LogChunk(val total: Int, val idx: Int, val data: IntArray) : Msg()
     class RssiRep(val r: IntArray) : Msg()
+    class RssiAck(val esik: Int) : Msg()
     class Live(val pkt: IntArray) : Msg()
     object Bad : Msg()
 }
@@ -168,6 +176,7 @@ class Parser(private val onMsg: (Msg) -> Unit) {
                     P.CMD_PRSSI -> onMsg(Msg.PRssi(r))
                     P.CMD_VRSSI -> onMsg(Msg.VRssi(r))
                     P.CMD_LOGRED -> onMsg(Msg.LogChunk(r[0], r[1], r.copyOfRange(2, 18)))
+                    P.CMD_RSSIES -> onMsg(Msg.RssiAck(-r[0]))
                 }
                 drop(len)
                 handled = true

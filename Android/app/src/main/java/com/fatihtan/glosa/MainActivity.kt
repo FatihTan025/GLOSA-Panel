@@ -349,11 +349,19 @@ fun VehicleTab(app: Glosa) {
 
 @Composable
 fun Esp32Tab(app: Glosa) {
-    Field("WiFi SSID", app.ssid, { app.ssid = it }, Modifier.fillMaxWidth(), number = false)
-    Field("Sifre", app.wpass, { app.wpass = it }, Modifier.fillMaxWidth(), number = false)
-    Text("Not: Gonderince ESP32 yeni ayarla yeniden baslar. Baglanti kopar, yeni SSID/sifre ile tekrar baglanin.",
-        color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
-    Buttons("Gonder" to app::sendWifi)
+    Section("WiFi (AP)") {
+        Field("SSID", app.ssid, { app.ssid = it }, Modifier.fillMaxWidth(), number = false)
+        Field("Sifre", app.wpass, { app.wpass = it }, Modifier.fillMaxWidth(), number = false)
+        Text("Gonderince ESP32 yeniden baslar, baglanti kopar.", color = Color.Gray, fontSize = 13.sp)
+        Buttons("Gonder" to app::sendWifi)
+    }
+    Section("ESP-NOW") {
+        Choice("RSSI esik (dBm)", P.RSSI_VALUES, app.rssiEsik, { app.rssiEsik = it }, Modifier.fillMaxWidth())
+        Text("-95 = en uzaktan kabul, -70 = en yakindan kabul", color = Color.Gray, fontSize = 13.sp)
+        Buttons("Gonder" to app::sendRssiEsik)
+    }
+    Text("Son beacon: " + app.rssiSummary.ifEmpty { "-" }, color = Color(0xFF0066CC),
+        modifier = Modifier.padding(top = 8.dp))
 }
 
 @Composable

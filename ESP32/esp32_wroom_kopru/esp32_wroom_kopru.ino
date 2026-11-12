@@ -10,7 +10,7 @@
     GND <-> GND
 
   WIFI AYARI (SSID/sifre degistirme):
-    PC.den USB Serial (kablo) ile su satir gelir:
+    PC'den USB Serial (kablo) ya da WiFi/TCP ile su satir gelir:
         WIFICF:yeniSSID:yeniSifre\n
     ESP32 bunu NVS'ye kaydeder, yeniden baslar. Yeni ayarla AP kurar.
     Bu komut STM32'ye GITMEZ (ESP32'de kalir).
@@ -32,7 +32,7 @@
     Arac ESP32-C3 butona basinca saniyede 4 'B' beacon yollar; onay gelince
     durur, gelmezse tanimli sure (varsayilan 2 sn) sonunda durur.
     Kopru her beacon'i aninda degerlendirir:
-      beacon RSSI >= RSSI_ESIK  -> KABUL (oturumda ilk kez)
+      beacon RSSI >= rssiEsik    -> KABUL (oturumda ilk kez)
     KABUL: STM32'ye 16 byte VEHICL ("VEHICL" + tip + ID H + ID L + 7 x 0)
            bir kez, C3'e unicast 'A' onay paketi. Kabul edilmis oturumdan
            gelen sonraki beacon'lara sadece onay tekrarlanir (C3 kacirdiysa).
@@ -41,6 +41,13 @@
       rssi = bu beacon, min/max/adet = oturum boyunca. int8 dBm,
       CS = byte 6..14 toplami.
     ESP-NOW kanali = AP kanali (AP_CHANNEL).
+
+  RSSI ESIGI (arayuzden ayarlanir):
+    PC -> ESP32 (WiFi/TCP, 16 byte): "RSSIES" + [6] esik (mutlak deger, 30-100)
+    Ornek: [6]=95 -> esik -95 dBm. Bu paket ESP32'de kalir (STM32'ye gitmez).
+    Deger ESP32'nin NVS'sine kaydedilir (reset'te kaybolmaz). NVS'de kayit yoksa
+    RSSI_ESIK (varsayilan -95) kullanilir. ESP32 ayni 16 byte'lik paketi
+    PC'ye geri yollar (onay).
     RSSI icin Arduino ESP32 core 3.x gerekir (2.x'te RSSI 0 gelir).
 
   ARDUINO IDE: Board "ESP32 Dev Module", Upload
@@ -59,7 +66,7 @@
 #define ESPNOW_ENABLE  1
 
 // ---- RSSI degerlendirme (sahada ayarlanacak) ----
-#define RSSI_ESIK      (-70)   // Kabul icin beacon RSSI alt siniri (dBm)
+#define RSSI_ESIK      (-95)   // Varsayilan esik (NVS'de kayit yoksa); arayuzden degistirilir (dBm)
 #define PANEL_KOL      0xFF    // Onaydaki kol numarasi (0xFF = bilinmiyor, ileride panelden)
 
 // Tipler en ustte: Arduino IDE fonksiyon prototiplerini ilk fonksiyondan
@@ -100,6 +107,7 @@ typedef struct {
 } RxItem;
 
 Preferences prefs;
+int8_t rssiEsik = RSSI_ESIK;   // calisma degeri (acilista NVS'den yuklenir)
 
 // ---- WiFi AP (varsayilan, NVS bos ise) ----
 String apSSID = "GLOSA_Panel";
@@ -269,7 +277,7 @@ void handleBeacon(const RxItem& it) {
   if (it.rssi < ses.mn) ses.mn = it.rssi;
   if (it.rssi > ses.mx) ses.mx = it.rssi;
 
-  if (!ses.accepted && it.rssi >= RSSI_ESIK) {
+  if (!ses.accepted && it.rssi >= rssiEsik) {
     ses.accepted = true;
     uint8_t out[16] = {'V','E','H','I','C','L', p.tip,
                        (uint8_t)(id >> 8), (uint8_t)(id & 0xFF), 0,0,0,0,0,0,0};
@@ -344,6 +352,8 @@ void loadWifiConfig() {
   prefs.begin("glosa", true);            // salt-okunur
   String s = prefs.getString("ssid", "");
   String p = prefs.getString("pass", "");
+  rssiEsik = prefs.getChar("rssi", RSSI_ESIK);
+  if (rssiEsik < -100 || rssiEsik > -30) rssiEsik = RSSI_ESIK;   // gecersiz kayit
   prefs.end();
   if (s.length() > 0) apSSID = s;
   if (p.length() >= 8) apPASS = p;
@@ -426,6 +436,7 @@ void setup() {
   bootBlink();           // 3 x 300 ms (STM32 verisi bu arada UART tamponunda bekler)
 
   loadWifiConfig();      // NVS'den SSID/sifre
+  Serial.printf("[RSSI] esik=%d dBm\n", rssiEsik);
   startAP();
 #if ESPNOW_ENABLE
   startEspNow();         // AP kanalinda arac isteklerini dinle
@@ -445,6 +456,65 @@ void setup() {
   Serial.print("[TCP] Port: "); Serial.println(TCP_PORT);
 }
 
+
+// ---- PC (TCP) -> ESP32 / STM32 ----
+#define PC_FRAME 16        // PC paketleri 16 byte sabit
+
+// "RSSIES" + [6] esik (mutlak deger): ESP32'de kalir, NVS'ye kaydedilir, PC'ye geri yollanir
+void handleRssiCmd(uint8_t absVal) {
+  int v = -(int)absVal;
+  if (v < -100 || v > -30) {
+    Serial.printf("[RSSIES] gecersiz deger: %d\n", v);
+    return;
+  }
+  rssiEsik = (int8_t)v;
+  prefs.begin("glosa", false);
+  prefs.putChar("rssi", rssiEsik);
+  prefs.end();
+  Serial.printf("[RSSIES] esik=%d dBm (kaydedildi)\n", v);
+
+  uint8_t echo[PC_FRAME] = {'R','S','S','I','E','S', absVal};   // kalan byte'lar 0
+  if (client && client.connected()) { client.write(echo, PC_FRAME); client.flush(); }
+}
+
+// PC (TCP) -> STM32: 16 byte'lik cerceveler. "RSSIES" ESP32'de kalir, digerleri
+// aynen STM32'ye gecer. Yarim/cop veri 20 ms sonra aynen STM32'ye iletilir.
+// "WIFICF:ssid:sifre\n" metin satiri da ESP32'de kalir (WiFi ayari).
+void servicePcLink() {
+  static uint8_t  pc[PC_FRAME];
+  static uint8_t  pcN = 0;
+  static uint32_t pcLast = 0;
+  static bool     textMode = false;     // WIFICF satiri okunuyor
+  static String   textLine;
+
+  while (client && client.connected() && client.available()) {
+    uint8_t b = (uint8_t)client.read();
+    if (textMode) {                                   // satir sonuna kadar topla
+      if (b == '\n') { textMode = false; handleTextCommand(textLine); textLine = ""; }
+      else if (b != '\r') {
+        textLine += (char)b;
+        if (textLine.length() > 120) { textMode = false; textLine = ""; }
+      }
+      continue;
+    }
+    pc[pcN++] = b;
+    pcLast = millis();
+    if (pcN == 7 && memcmp(pc, "WIFICF:", 7) == 0) {  // ikili cerceve degil, metin
+      textMode = true; textLine = "WIFICF:"; pcN = 0;
+      continue;
+    }
+    if (pcN == PC_FRAME) {
+      if (memcmp(pc, "RSSIES", 6) == 0) handleRssiCmd(pc[6]);
+      else                               STM.write(pc, PC_FRAME);
+      pcN = 0;
+    }
+    triggerBlink();
+  }
+  if (pcN && (millis() - pcLast) >= 20) {
+    STM.write(pc, pcN);
+    pcN = 0;
+  }
+}
 
 void loop() {
   esp_task_wdt_reset();
@@ -466,11 +536,8 @@ void loop() {
     if (nc) { client = nc; client.setNoDelay(true); Serial.println("[TCP] Istemci baglandi."); }
   }
 
-  // PC (TCP) -> STM32  (seffaf: gelen byte'lar dogrudan STM32'ye)
-  if (client && client.connected() && client.available()) {
-    while (client.available()) STM.write((uint8_t)client.read());
-    triggerBlink();
-  }
+  // PC (TCP) -> STM32 (16 byte cerceve; RSSIES ESP32'de kalir)
+  servicePcLink();
 
 #if ESPNOW_ENABLE
   // ESP-NOW arac beacon'lari -> RSSI degerlendirme -> STM32 / C3 / PC

@@ -86,6 +86,7 @@ class Glosa(ctx: Context) {
     // ---- ESP32 ----
     var ssid by mutableStateOf("GLOSA_Panel")
     var wpass by mutableStateOf("glosa1234")
+    var rssiEsik by mutableStateOf(P.RSSI_DEFAULT)
 
     // ---- Canli monitor ----
     val liveRows = mutableStateListOf<String>()
@@ -244,6 +245,13 @@ class Glosa(ctx: Context) {
         toast = "Ayar gonderildi. ESP32 yeniden baslayacak; yeni SSID/sifre ile tekrar baglanin."
     }
 
+    /** ESP-NOW RSSI esigi: "RSSIES" + [6] mutlak deger (95 -> -95 dBm). ESP32'de kalir. */
+    fun sendRssiEsik() {
+        val v = rssiEsik.toIntOrNull()
+        if (v == null || v !in -100..-30) { toast = "Gecersiz RSSI esigi."; return }
+        if (send(P.CMD_RSSIES, listOf(-v))) log("RSSI esigi gonderildi: $v dBm")
+    }
+
     // ================= ALMA =================
     private fun onMessage(m: Msg) {
         when (m) {
@@ -256,6 +264,7 @@ class Glosa(ctx: Context) {
             is Msg.VRssi -> showVRssi(m.r)
             is Msg.LogChunk -> onLogChunk(m.total, m.idx, m.data)
             is Msg.RssiRep -> showRssiRep(m.r)
+            is Msg.RssiAck -> { rssiEsik = m.esik.toString(); log("ESP32 RSSI esigi onaylandi ve kaydedildi: ${m.esik} dBm") }
         }
     }
 

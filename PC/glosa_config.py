@@ -19,6 +19,9 @@
                          tip idH idL oturum rssi min max adet kabul CS
                          (rssi = bu beacon; min/max/adet = oturum boyunca)
                          RSSI'lar isaretli byte (dBm), CS = 9 byte toplami
+  PC <-> ESP32 kopru:    RSSIES [6]esik (mutlak deger, 30-100) -> ESP-NOW RSSI esigi;
+                         kopru NVS'ye kaydeder, ayni 16 byte'i onay olarak geri yollar
+                         (STM32'ye gitmez)
 
   Verici komutlari (F051 Define.h ile ayni):
     KAVCFG [6]Kol sayisi(1-6) [7]Max hiz(1-130) [8]Role on sure(0-60 sn)
@@ -79,6 +82,9 @@ CMD_PRSSI   = b"E22RSS"     # panel: RSSI / gurultu oku
 CMD_VRSSI   = b"RSSRED"     # verici: RSSI / gurultu oku
 CMD_LOGRED  = b"LOGRED"     # verici: oncelik istegi kaydi oku ([6] = sira)
 CMD_RSSIRP  = b"RSSIRP"     # ESP32 kopru: arac oturumu RSSI raporu
+CMD_RSSIES  = b"RSSIES"     # ESP32 kopru: ESP-NOW RSSI esigi yaz (STM32'ye gitmez)
+RSSI_VALUES = ["-95","-90","-85","-80","-75","-70"]   # secilebilir esikler (dBm)
+RSSI_DEFAULT = "-95"
 PACKET_SIZE = 16
 SEQ_GAP_MS  = 250           # verici: ardisik paketler arasi bekleme (flash yazimi)
 # Canli veri: 'D' + LIVE_SIZE byte. Verici/F401 paket boyu degisirse
@@ -93,7 +99,7 @@ VRSSI_REPLY = len(CMD_VRSSI) + 9     # gurultu, son paket, 6 kol istek RSSI, RSS
 LOG_REPLY   = len(CMD_LOGRED) + 18   # toplam, sira, 2 x 8 byte kayit
 LOG_TIMEOUT = 2000                   # kayit parcasi bekleme (ms)
 RSSIRP_REPLY= len(CMD_RSSIRP) + 10   # tip idH idL oturum rssi min max adet kabul CS = 16
-REPLY_CMDS  = (CMD_READ, CMD_RTCREAD, CMD_CFGRED, CMD_PRSSI, CMD_VRSSI, CMD_LOGRED, CMD_RSSIRP)
+REPLY_CMDS  = (CMD_READ, CMD_RTCREAD, CMD_CFGRED, CMD_PRSSI, CMD_VRSSI, CMD_LOGRED, CMD_RSSIRP, CMD_RSSIES)
 
 # Canli monitor sutun etiketleri (LIVE_SIZE adet, paket sirasiyla).
 # Rezerve bir byte kullanilmaya baslaninca sadece adini degistir.
@@ -363,14 +369,26 @@ class ConfigApp:
         self.lbl_rssi_sum=ttk.Label(rb,text="",foreground="#0066cc"); self.lbl_rssi_sum.pack(side="left",padx=10)
 
     def _build_esp32(self, f):
-        g=ttk.Frame(f); g.pack(fill="x")
-        ttk.Label(g,text="WiFi SSID:").grid(row=0,column=0,sticky="w",pady=4)
-        self.ent_ssid=ttk.Entry(g,width=22); self.ent_ssid.insert(0,"GLOSA_Panel"); self.ent_ssid.grid(row=0,column=1,padx=6)
-        ttk.Label(g,text="Sifre:").grid(row=1,column=0,sticky="w",pady=4)
-        self.ent_pass=ttk.Entry(g,width=22); self.ent_pass.insert(0,"glosa1234"); self.ent_pass.grid(row=1,column=1,padx=6)
-        ttk.Label(f,text="Not: Gonderince ESP32 yeni ayarla yeniden baslar.\nBaglanti kopar, yeni SSID/sifre ile tekrar baglanin.",
-                  foreground="#888").pack(anchor="w",pady=(8,0))
-        ttk.Button(f,text="Gonder",width=12,command=self.send_wifi).pack(anchor="w",pady=(12,0))
+        row=ttk.Frame(f); row.pack(fill="x")
+        # --- WiFi (AP) ---
+        w=ttk.LabelFrame(row,text="WiFi (AP)",padding=(8,4)); w.pack(side="left",fill="y",padx=(0,8))
+        ttk.Label(w,text="SSID:").grid(row=0,column=0,sticky="w",pady=3)
+        self.ent_ssid=ttk.Entry(w,width=20); self.ent_ssid.insert(0,"GLOSA_Panel"); self.ent_ssid.grid(row=0,column=1,padx=6)
+        ttk.Label(w,text="Sifre:").grid(row=1,column=0,sticky="w",pady=3)
+        self.ent_pass=ttk.Entry(w,width=20); self.ent_pass.insert(0,"glosa1234"); self.ent_pass.grid(row=1,column=1,padx=6)
+        ttk.Label(w,text="Gonderince ESP32 yeniden baslar,\nbaglanti kopar.",
+                  foreground="#888").grid(row=2,column=0,columnspan=2,sticky="w",pady=(4,0))
+        ttk.Button(w,text="Gonder",width=12,command=self.send_wifi).grid(row=3,column=0,columnspan=2,sticky="w",pady=(6,0))
+        # --- ESP-NOW ---
+        n=ttk.LabelFrame(row,text="ESP-NOW",padding=(8,4)); n.pack(side="left",fill="y")
+        ttk.Label(n,text="RSSI esik (dBm):").grid(row=0,column=0,sticky="w",pady=3)
+        self.cbo_rssi=ttk.Combobox(n,width=6,state="readonly",values=RSSI_VALUES)
+        self.cbo_rssi.set(RSSI_DEFAULT); self.cbo_rssi.grid(row=0,column=1,padx=6)
+        ttk.Label(n,text="-95 = en uzaktan kabul\n-70 = en yakindan kabul",
+                  foreground="#888").grid(row=1,column=0,columnspan=2,sticky="w",pady=(4,0))
+        ttk.Button(n,text="Gonder",width=12,command=self.send_rssi).grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
+        self.lbl_rssi=ttk.Label(f,text="Son beacon: -",foreground="#0066cc")
+        self.lbl_rssi.pack(anchor="w",pady=(8,0))
 
     # ---------------- BAGLANTI ----------------
     def _upd_conn_fields(self):
@@ -636,7 +654,12 @@ class ConfigApp:
         self.tv_rssi.insert("", "end", values=row)
         self.tv_rssi.see(self.tv_rssi.get_children()[-1])
         self.lbl_rssi_sum.config(text=f"Son: {med} dBm (oturum {mn}..{mx}), {r[7]}. paket, {ok}")
+        self.lbl_rssi.config(text=f"Son beacon: {med} dBm   oturum min/max: {mn}/{mx}   adet: {r[7]}   {ok}")
         self.log(f"ESP-NOW RSSI: {tip} ID={vid} oturum={r[3]} rssi={med} min={mn} max={mx} paket={r[7]} -> {ok}")
+
+    def show_rssi_ack(self, v):
+        self.cbo_rssi.set(str(v))
+        self.log(f"ESP32 RSSI esigi onaylandi ve kaydedildi: {v} dBm")
 
     def save_rssi(self):
         rows=[self.tv_rssi.item(i,"values") for i in self.tv_rssi.get_children()]
@@ -671,6 +694,18 @@ class ConfigApp:
                                 "Baglanti kopacak — yeni SSID/sifre ile tekrar baglanin.")
         except Exception as e:
             messagebox.showerror("Hata",str(e))
+
+    def send_rssi(self):
+        # ESP-NOW RSSI esigi: "RSSIES" + [6] esik mutlak degeri (95 -> -95 dBm)
+        # ESP32 koprusu bu paketi kendi tutar; sadece WiFi (TCP) baglantisinda ESP32'ye ulasir.
+        if not self.conn: messagebox.showwarning("Uyari","Once baglanin."); return
+        if not self.sock:
+            messagebox.showwarning("Uyari","RSSI esigi sadece WiFi baglantisiyla ESP32'ye gonderilir."); return
+        try:
+            v=int(self.cbo_rssi.get()); assert -100<=v<=-30
+        except (ValueError,AssertionError):
+            messagebox.showerror("Hata","Gecersiz RSSI esigi."); return
+        if self.send_packet(CMD_RSSIES,[-v]): self.log(f"RSSI esigi gonderildi: {v} dBm")
 
     # ---------------- ALMA (arka plan thread) ----------------
     def rx_loop(self):
@@ -761,6 +796,13 @@ class ConfigApp:
                     self.root.after(0, self.show_rssirp, r)
                     continue
                 self.buf = self.buf[1:]                    # bozuk rapor: senkron ara
+                continue
+            # --- ESP32 RSSI esigi onayi (16 byte, [6] = mutlak esik) ---
+            if self.buf.startswith(CMD_RSSIES):
+                if len(self.buf) < PACKET_SIZE: return
+                v = -self.buf[6]
+                self.buf = self.buf[PACKET_SIZE:]
+                self.root.after(0, self.show_rssi_ack, v)
                 continue
             # Cevap kelimesinin basi gelmis ama tamami gelmemis olabilir: bekle
             if len(self.buf) < len(CMD_READ) and any(c.startswith(self.buf) for c in REPLY_CMDS):
