@@ -1,0 +1,42 @@
+# Android uygulamasi: Android/ klasoru degisince APK derlenir ve
+# "son-apk" surumune (Releases) eklenir. Telefondan oradan indirilip kurulur.
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths: ["Android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  derle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: APK derle
+        working-directory: Android
+        run: gradle assembleDebug --stacktrace
+
+      - name: Son APK surumunu guncelle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp Android/app/build/outputs/apk/debug/app-debug.apk GLOSA.apk
+          gh release delete son-apk --yes --cleanup-tag || true
+          gh release create son-apk GLOSA.apk \
+            --title "Son APK ($(date -u +'%Y-%m-%d %H:%M') UTC)" \
+            --notes "Otomatik derleme: ${GITHUB_SHA::7}. Telefondan GLOSA.apk indirip kurun." \
+            --target "$GITHUB_SHA"

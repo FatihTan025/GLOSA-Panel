@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# Android / Gradle
+Android/.gradle/
+Android/.idea/
+Android/local.properties
+Android/build/
+Android/app/build/
+*.apk
+*.aab
+*.iml
+
+# Isletim sistemi
+Thumbs.db
+desktop.ini
+.DS_Store
